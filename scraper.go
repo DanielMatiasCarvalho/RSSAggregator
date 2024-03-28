@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/DanielMatiasCarvalho/RSSAggregator/internal/database"
+	"github.com/google/uuid"
 )
 
 func startScraping(
@@ -52,7 +56,56 @@ func scrapeFeed(db *database.Queries, wg *sync.WaitGroup, feed database.Feed) {
 	}
 
 	for _, item := range rssFeed.Channel.Item {
-		log.Println("Found post", item.Title, "on feed", feed.Name)
+		description := sql.NullString{}
+		if item.Description != "" {
+			description.String = item.Description
+			description.Valid = true
+		}
+
+		pubAt, err := parseDate(item.PubDate)
+		if err != nil {
+			log.Println("Error parsing date:", err)
+			continue
+		}
+
+		_, err = db.CreatePost(context.Background(), database.CreatePostParams{
+			ID:          uuid.New(),
+			CreatedAt:   time.Now().UTC(),
+			UpdatedAt:   time.Now().UTC(),
+			Title:       item.Title,
+			Description: description,
+			PublishedAt: pubAt,
+			Url:         item.Link,
+			FeedID:      feed.ID,
+		})
+		if err != nil {
+			if strings.Contains(err.Error(), "duplicate key") {
+				continue
+			}
+			log.Println("feiled to create post:", err)
+			continue
+		}
 	}
 	log.Printf("Feed %s collected, %v posts found", feed.Name, len(rssFeed.Channel.Item))
+}
+
+func parseDate(dateString string) (time.Time, error) {
+	// For this function to be more robust, we should add several date formats in this slice
+	// Define list of date formats to try
+	dateFormats := []string{
+		time.RFC1123Z,
+	}
+
+	// Attempt to parse the date string using each format
+	var parsedTime time.Time
+	var err error
+	for _, format := range dateFormats {
+		parsedTime, err = time.Parse(format, dateString)
+		if err == nil {
+			return parsedTime, nil // Successfully parsed
+		}
+	}
+
+	// If none of the formats match, return an error
+	return time.Time{}, fmt.Errorf("couldn't parse date %s", dateString)
 }
